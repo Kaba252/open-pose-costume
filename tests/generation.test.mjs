@@ -111,6 +111,8 @@ test('image edit request attaches both original files and keeps auth off image s
   assert.equal(request.options.body.getAll('image[]').length, 2);
   assert.equal(request.options.body.get('model'), 'gpt-image-2');
   assert.equal(request.options.body.get('prompt'), 'draw a character');
+  // The SiliconFlow role preface must never leak into OpenAI requests.
+  assert.ok(!request.options.body.get('prompt').includes('参考图分工'));
   assert.equal(request.options.body.get('input_fidelity'), null);
 });
 
@@ -149,7 +151,10 @@ test('siliconflow requests JSON generations with base64 references and parses im
   assert.equal(request.options.headers['Content-Type'], 'application/json');
   const body = JSON.parse(request.options.body);
   assert.equal(body.model, 'Qwen/Qwen-Image-Edit-2509');
-  assert.equal(body.prompt, 'draw a character');
+  // Two references get a two-image role preface; the original text is kept.
+  assert.ok(body.prompt.startsWith('参考图分工：图1是姿势参考，图2是服装参考。'));
+  assert.ok(body.prompt.endsWith('draw a character'));
+  assert.ok(!body.prompt.includes('图3'));
   assert.equal(body.image, `data:image/png;base64,${png}`);
   assert.equal(body.image2, `data:image/png;base64,${png}`);
   assert.equal(body.image3, undefined);
@@ -271,6 +276,45 @@ test('optional character is a third original file without fetching its preview o
   assert.match(form.get('prompt'), /Reference 3 \(character\)/);
   assert.match(form.get('prompt'), /identity and visual style/);
   assert.ok(!form.get('prompt').includes(characterReference.file.name));
+});
+
+test('siliconflow prompt assigns a role to each of the three references', async () => {
+  const sfConfig = {
+    ...config,
+    provider: 'siliconflow',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'Qwen/Qwen-Image-Edit-2509',
+  };
+  const refs = [...references, characterReference];
+  const calls = [];
+  const result = await api.generateReferenceImage(
+    sfConfig,
+    refs,
+    'draw a character',
+    new AbortController().signal,
+    async (url, options) => {
+      calls.push({ url, options });
+      return calls.length <= 2
+        ? new Response(Buffer.from(png, 'base64'), { headers: { 'Content-Type': 'image/png' } })
+        : Response.json({ images: [{ url: 'https://cdn.example/result.png' }] });
+    },
+  );
+  assert.equal(result, 'https://cdn.example/result.png');
+  // Two gallery originals are fetched; the uploaded character file is not.
+  assert.equal(calls.length, 3);
+  const body = JSON.parse(calls[2].options.body);
+  assert.equal(body.image, `data:image/png;base64,${png}`);
+  assert.equal(body.image2, `data:image/png;base64,${png}`);
+  assert.equal(body.image3, `data:image/png;base64,${png}`);
+  assert.match(body.prompt, /图1是姿势参考/);
+  assert.match(body.prompt, /图2是服装参考/);
+  assert.match(body.prompt, /图3是人物参考/);
+  assert.match(body.prompt, /图3的人物穿上图2的服装，摆出图1的姿势/);
+  assert.match(body.prompt, /保留图3的面部与发型/);
+  assert.match(body.prompt, /不要线稿/);
+  assert.match(body.prompt, /不要人台或木偶/);
+  assert.match(body.prompt, /不要裸体素体/);
+  assert.ok(body.prompt.endsWith('draw a character'));
 });
 
 test('character prompts describe actual role order in both languages without changing the two-reference workflow', () => {
