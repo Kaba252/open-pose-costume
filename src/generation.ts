@@ -237,6 +237,19 @@ export function siliconflowResult(payload: unknown): string {
   throw new ImageGenerationError('invalidResult');
 }
 
+// Qwen image-edit models do not infer what each reference image is for, so
+// the SiliconFlow request prefaces the prompt with the role of every image in
+// send order (image = pose, image2 = costume, image3 = character when one is
+// attached) plus an explicit ban on line-art / mannequin / nude-body output.
+// Only the prompt sent to SiliconFlow changes: the description shown in the
+// UI and the OpenAI request keep the original wording.
+function siliconflowPrompt(prompt: string, hasCharacter: boolean): string {
+  const prefix = hasCharacter
+    ? '参考图分工：图1是姿势参考，图2是服装参考，图3是人物参考。请生成一张全身图：图3的人物穿上图2的服装，摆出图1的姿势，保留图3的面部与发型。真人写实效果，不要线稿，不要人台或木偶，不要裸体素体。以下是具体描述：'
+    : '参考图分工：图1是姿势参考，图2是服装参考。请生成一张全身图：一位人物穿上图2的服装，摆出图1的姿势。真人写实效果，不要线稿，不要人台或木偶，不要裸体素体。以下是具体描述：';
+  return `${prefix}\n${prompt.trim()}`;
+}
+
 async function blobToDataUrl(blob: Blob): Promise<string> {
   const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = '';
@@ -302,7 +315,11 @@ export async function generateReferenceImage(
       // SiliconFlow expects JSON, not multipart: references travel as base64
       // data URIs in image / image2 / image3 (the app never selects more).
       if (entries.length > 3) throw new ImageGenerationError('invalidConfig');
-      const body: Record<string, string> = { model: valid.model, prompt: prompt.trim() };
+      const hasCharacter = references.some((reference) => reference.kind === 'character');
+      const body: Record<string, string> = {
+        model: valid.model,
+        prompt: siliconflowPrompt(prompt, hasCharacter),
+      };
       for (const [index, entry] of entries.entries())
         body[index === 0 ? 'image' : `image${index + 1}`] = await blobToDataUrl(entry.blob);
       if (!siliconflowEditModels.includes(valid.model)) {
