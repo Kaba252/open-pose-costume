@@ -114,6 +114,51 @@ test('image edit request attaches both original files and keeps auth off image s
   assert.equal(request.options.body.get('input_fidelity'), null);
 });
 
+test('siliconflow requests JSON generations with base64 references and parses image URLs', async () => {
+  const sfConfig = {
+    ...config,
+    provider: 'siliconflow',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'Qwen/Qwen-Image-Edit-2509',
+  };
+  assert.equal(
+    api.imageEndpoint(sfConfig.baseUrl, 'siliconflow'),
+    'https://api.siliconflow.cn/v1/images/generations',
+  );
+  assert.equal(api.normalizeImageConfig(sfConfig).baseUrl, 'https://api.siliconflow.cn/v1');
+  const calls = [];
+  const result = await api.generateReferenceImage(
+    sfConfig,
+    references,
+    'draw a character',
+    new AbortController().signal,
+    async (url, options) => {
+      calls.push({ url, options });
+      return calls.length <= 2
+        ? new Response(Buffer.from(png, 'base64'), { headers: { 'Content-Type': 'image/png' } })
+        : Response.json({ images: [{ url: 'https://cdn.example/result.png' }] });
+    },
+  );
+  assert.equal(result, 'https://cdn.example/result.png');
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].options.headers, undefined);
+  assert.equal(calls[1].options.headers, undefined);
+  const request = calls[2];
+  assert.equal(request.url, 'https://api.siliconflow.cn/v1/images/generations');
+  assert.equal(request.options.headers.Authorization, `Bearer ${sfConfig.apiKey}`);
+  assert.equal(request.options.headers['Content-Type'], 'application/json');
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.model, 'Qwen/Qwen-Image-Edit-2509');
+  assert.equal(body.prompt, 'draw a character');
+  assert.equal(body.image, `data:image/png;base64,${png}`);
+  assert.equal(body.image2, `data:image/png;base64,${png}`);
+  assert.equal(body.image3, undefined);
+  // The edit models do not support image_size, so it must be omitted for them.
+  assert.equal(body.image_size, undefined);
+  assert.throws(() => api.siliconflowResult({ images: [{ url: 'http://insecure.example/x.png' }] }));
+  assert.throws(() => api.siliconflowResult({ data: [] }));
+});
+
 test('provider errors are redacted and not retried automatically', async () => {
   let calls = 0;
   await assert.rejects(
