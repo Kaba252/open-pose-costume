@@ -22,8 +22,10 @@ import {
   imageEndpoint,
   imageSizes,
   saveImageConfig,
+  siliconflowBaseUrl,
+  siliconflowModel,
 } from './generation';
-import type { GenerationJob, ImageConfig, ImageReference } from './generation';
+import type { GenerationJob, ImageConfig, ImageProvider, ImageReference } from './generation';
 import type { Lang } from './types';
 
 function imageExtension(type: string): string {
@@ -176,12 +178,42 @@ export function ImageSettings({
   const [error, setError] = useState('');
   let serviceHomepage = defaultImageConfig.baseUrl;
   try {
-    serviceHomepage = new URL(imageEndpoint(draft.baseUrl)).origin;
+    serviceHomepage =
+      draft.provider === 'siliconflow'
+        ? 'https://cloud.siliconflow.cn/account/ak'
+        : new URL(imageEndpoint(draft.baseUrl)).origin;
   } catch {
     // Keep the default service link while an incomplete URL is being edited.
   }
   const update = (key: keyof ImageConfig, value: string | boolean) => {
     setDraft((old) => ({ ...old, [key]: value }));
+    setError('');
+  };
+  const switchProvider = (provider: ImageProvider) => {
+    setDraft((old) => {
+      if (old.provider === provider) return old;
+      // Swap in the other provider's defaults only where the fields still
+      // hold the current provider's defaults, preserving custom values.
+      const bases =
+        provider === 'siliconflow'
+          ? [defaultImageConfig.baseUrl, `${defaultImageConfig.baseUrl}/v1`]
+          : [siliconflowBaseUrl];
+      const models = provider === 'siliconflow' ? [defaultImageConfig.model] : [siliconflowModel];
+      return {
+        ...old,
+        provider,
+        baseUrl: bases.includes(old.baseUrl)
+          ? provider === 'siliconflow'
+            ? siliconflowBaseUrl
+            : defaultImageConfig.baseUrl
+          : old.baseUrl,
+        model: models.includes(old.model)
+          ? provider === 'siliconflow'
+            ? siliconflowModel
+            : defaultImageConfig.model
+          : old.model,
+      };
+    });
     setError('');
   };
   return (
@@ -214,6 +246,16 @@ export function ImageSettings({
           }
         }}
       >
+        <label>
+          {t.provider}
+          <select
+            value={draft.provider}
+            onChange={(e) => switchProvider(e.target.value as ImageProvider)}
+          >
+            <option value="openai">{t.providerOpenai}</option>
+            <option value="siliconflow">{t.providerSiliconflow}</option>
+          </select>
+        </label>
         <label>
           {t.baseUrl}
           <input
@@ -272,16 +314,18 @@ export function ImageSettings({
               ))}
             </select>
           </label>
-          <label>
-            {t.quality}
-            <select value={draft.quality} onChange={(e) => update('quality', e.target.value)}>
-              {(['auto', 'low', 'medium', 'high'] as const).map((quality) => (
-                <option key={quality} value={quality}>
-                  {t[quality]}
-                </option>
-              ))}
-            </select>
-          </label>
+          {draft.provider === 'openai' && (
+            <label>
+              {t.quality}
+              <select value={draft.quality} onChange={(e) => update('quality', e.target.value)}>
+                {(['auto', 'low', 'medium', 'high'] as const).map((quality) => (
+                  <option key={quality} value={quality}>
+                    {t[quality]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
         <label className="remember-key">
           <input
@@ -292,7 +336,9 @@ export function ImageSettings({
           {t.rememberKey}
         </label>
         <p className="settings-note">{t.privacy}</p>
-        <p className="settings-note">{t.compatibility}</p>
+        <p className="settings-note">
+          {draft.provider === 'siliconflow' ? t.compatibilitySiliconflow : t.compatibility}
+        </p>
         {error && (
           <p className="generation-error" role="alert">
             {error}

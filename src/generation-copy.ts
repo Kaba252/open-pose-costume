@@ -2,6 +2,9 @@ export const generationCopy = {
   zh: {
     settings: '生图设置',
     settingsIntro: '连接兼容 OpenAI 图片接口的生图服务。',
+    provider: '服务类型',
+    providerOpenai: 'OpenAI 兼容',
+    providerSiliconflow: '硅基流动 SiliconFlow',
     baseUrl: '服务地址',
     apiKey: 'API Key',
     getApiKey: '获取APIKey',
@@ -15,6 +18,8 @@ export const generationCopy = {
     privacy:
       '配置仅保存在此浏览器。未勾选时，密钥只保留在当前会话。点击参考生成后，所选参考图和描述会发送到此服务。',
     compatibility: '服务需支持 /v1/images/edits 图片编辑接口和浏览器跨域请求。',
+    compatibilitySiliconflow:
+      '硅基流动走 /v1/images/generations 接口；Qwen-Image-Edit-2509 最多支持 3 张参考图（image / image2 / image3），生成图链接 1 小时内有效，请及时下载。',
     save: '保存配置',
     clear: '清除配置',
     saved: '生图配置已保存',
@@ -73,6 +78,9 @@ export const generationCopy = {
   en: {
     settings: 'Image settings',
     settingsIntro: 'Connect an OpenAI-compatible image generation service.',
+    provider: 'Service type',
+    providerOpenai: 'OpenAI compatible',
+    providerSiliconflow: 'SiliconFlow',
     baseUrl: 'Service URL',
     apiKey: 'API key',
     getApiKey: 'Get API key',
@@ -86,6 +94,8 @@ export const generationCopy = {
     privacy:
       'Settings stay in this browser. Without this option, the key lasts for this session only. Generating sends the selected reference images and description to this service.',
     compatibility: 'The service must support /v1/images/edits and browser CORS requests.',
+    compatibilitySiliconflow:
+      'SiliconFlow uses /v1/images/generations; Qwen-Image-Edit-2509 accepts up to 3 reference images (image / image2 / image3), and generated image links stay valid for one hour, so download promptly.',
     save: 'Save settings',
     clear: 'Clear settings',
     saved: 'Image settings saved',

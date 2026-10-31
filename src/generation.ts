@@ -1,7 +1,9 @@
 import type { Kind, Lang, Reference, Variant } from './types';
 import { isDepthVariant, poseDepthOrigin } from './pose-depth';
 
+export type ImageProvider = 'openai' | 'siliconflow';
 export interface ImageConfig {
+  provider: ImageProvider;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -34,6 +36,7 @@ export interface GenerationJob {
 const SETTINGS_KEY = 'opc-image-settings';
 const SESSION_KEY = 'opc-image-session-key';
 export const defaultImageConfig: ImageConfig = {
+  provider: 'openai',
   baseUrl: 'https://atomflow.vip',
   apiKey: '',
   model: 'gpt-image-2',
@@ -42,8 +45,21 @@ export const defaultImageConfig: ImageConfig = {
   rememberKey: false,
 };
 export const imageSizes = ['1024x1024', '1024x1536', '1536x1024', '2048x2048', 'auto'];
+export const siliconflowBaseUrl = 'https://api.siliconflow.cn/v1';
+export const siliconflowModel = 'Qwen/Qwen-Image-Edit-2509';
+// SiliconFlow image editing models accept up to three reference images via the
+// image / image2 / image3 fields; image2 and image3 require the 2509 model.
+// Per the official docs the edit models do not support image_size, so the
+// configured size only maps onto text-to-image models that accept it.
+const siliconflowEditModels = ['Qwen/Qwen-Image-Edit-2509', 'Qwen/Qwen-Image-Edit'];
+const siliconflowSizes: Record<string, string> = {
+  '1024x1024': '1328x1328',
+  '1024x1536': '1056x1584',
+  '1536x1024': '1584x1056',
+  '2048x2048': '1328x1328',
+};
 
-export function imageEndpoint(baseUrl: string): string {
+export function imageEndpoint(baseUrl: string, provider: ImageProvider = 'openai'): string {
   const url = new URL(baseUrl.trim());
   const loopback = ['localhost', '127.0.0.1'].includes(url.hostname);
   if (
@@ -56,11 +72,12 @@ export function imageEndpoint(baseUrl: string): string {
     throw Error('invalidEndpoint');
   let pathname = url.pathname.replace(/\/+$/, '').replace(/\/images\/(edits|generations)$/, '');
   if (!pathname.endsWith('/v1')) pathname += '/v1';
-  return `${url.origin}${pathname}/images/edits`;
+  return `${url.origin}${pathname}/images/${provider === 'siliconflow' ? 'generations' : 'edits'}`;
 }
 
 export function normalizeImageConfig(config: ImageConfig): ImageConfig {
-  const endpoint = imageEndpoint(config.baseUrl);
+  const provider: ImageProvider = config.provider === 'siliconflow' ? 'siliconflow' : 'openai';
+  const endpoint = imageEndpoint(config.baseUrl, provider);
   if (!config.apiKey.trim() || !config.model.trim() || /[\r\n]/.test(config.apiKey))
     throw Error('missingConfig');
   if (
@@ -70,7 +87,8 @@ export function normalizeImageConfig(config: ImageConfig): ImageConfig {
     throw Error('invalidConfig');
   return {
     ...config,
-    baseUrl: endpoint.replace(/\/images\/edits$/, ''),
+    provider,
+    baseUrl: endpoint.replace(/\/images\/(edits|generations)$/, ''),
     apiKey: config.apiKey.trim(),
     model: config.model.trim(),
   };
@@ -86,6 +104,9 @@ export function loadImageConfig(): ImageConfig {
     const candidate = {
       ...defaultImageConfig,
       ...saved,
+      provider: (saved.provider === 'siliconflow'
+        ? 'siliconflow'
+        : 'openai') as ImageConfig['provider'],
       // Migrate the retired model default while preserving the service and key.
       model: saved.model.startsWith('grok-') ? defaultImageConfig.model : saved.model,
       rememberKey,
@@ -202,6 +223,28 @@ export function imageResult(payload: unknown): string {
   throw new ImageGenerationError('invalidResult');
 }
 
+export function siliconflowResult(payload: unknown): string {
+  // SiliconFlow answers { images: [{ url }] }; the URL stays valid for one hour.
+  const row = (payload as { images?: { url?: unknown }[] })?.images?.[0];
+  if (typeof row?.url === 'string') {
+    try {
+      const url = new URL(row.url);
+      if (url.protocol === 'https:' && !url.username && !url.password) return url.href;
+    } catch {
+      /* Report one consistent error for invalid provider output. */
+    }
+  }
+  throw new ImageGenerationError('invalidResult');
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  return `data:${blob.type};base64,${btoa(binary)}`;
+}
+
 export async function generateReferenceImage(
   config: ImageConfig,
   references: ImageReference[],
@@ -227,12 +270,7 @@ export async function generateReferenceImage(
     });
     for (const reference of references)
       if ('file' in reference) await validateCharacterFile(reference.file);
-    const form = new FormData();
-    form.set('model', valid.model);
-    form.set('prompt', prompt.trim());
-    form.set('n', '1');
-    form.set('size', valid.size);
-    form.set('quality', valid.quality);
+    const entries: { blob: Blob; name: string }[] = [];
     for (const [index, reference] of references.entries()) {
       combined.throwIfAborted();
       let blob: Blob;
@@ -253,30 +291,67 @@ export async function generateReferenceImage(
         blob.size > 50 * 1024 * 1024
       )
         throw new ImageGenerationError('referenceFailed');
-      form.append(
-        'image[]',
+      entries.push({
         blob,
-        `${'file' in reference ? 'character-upload' : reference.variant.id}.${blob.type === 'image/png' ? 'png' : blob.type === 'image/jpeg' ? 'jpg' : 'webp'}`,
-      );
+        name: `${'file' in reference ? 'character-upload' : reference.variant.id}.${blob.type === 'image/png' ? 'png' : blob.type === 'image/jpeg' ? 'jpg' : 'webp'}`,
+      });
     }
     combined.throwIfAborted();
-    const response = await fetcher(imageEndpoint(valid.baseUrl), {
-      method: 'POST',
-      signal: combined,
-      credentials: 'omit',
-      redirect: 'error',
-      headers: { Authorization: `Bearer ${valid.apiKey}` },
-      body: form,
-    });
+    let response: Response;
+    if (valid.provider === 'siliconflow') {
+      // SiliconFlow expects JSON, not multipart: references travel as base64
+      // data URIs in image / image2 / image3 (the app never selects more).
+      if (entries.length > 3) throw new ImageGenerationError('invalidConfig');
+      const body: Record<string, string> = { model: valid.model, prompt: prompt.trim() };
+      for (const [index, entry] of entries.entries())
+        body[index === 0 ? 'image' : `image${index + 1}`] = await blobToDataUrl(entry.blob);
+      if (!siliconflowEditModels.includes(valid.model)) {
+        const imageSize = siliconflowSizes[valid.size];
+        if (imageSize) body.image_size = imageSize;
+      }
+      combined.throwIfAborted();
+      response = await fetcher(imageEndpoint(valid.baseUrl, valid.provider), {
+        method: 'POST',
+        signal: combined,
+        credentials: 'omit',
+        redirect: 'error',
+        headers: {
+          Authorization: `Bearer ${valid.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } else {
+      const form = new FormData();
+      form.set('model', valid.model);
+      form.set('prompt', prompt.trim());
+      form.set('n', '1');
+      form.set('size', valid.size);
+      form.set('quality', valid.quality);
+      for (const entry of entries) form.append('image[]', entry.blob, entry.name);
+      response = await fetcher(imageEndpoint(valid.baseUrl), {
+        method: 'POST',
+        signal: combined,
+        credentials: 'omit',
+        redirect: 'error',
+        headers: { Authorization: `Bearer ${valid.apiKey}` },
+        body: form,
+      });
+    }
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.error) {
-      const message = typeof payload?.error?.message === 'string' ? payload.error.message : '';
+      const message =
+        typeof payload?.error?.message === 'string'
+          ? payload.error.message
+          : typeof payload?.message === 'string'
+            ? payload.message
+            : '';
       throw new ImageGenerationError(
         'providerFailed',
         `HTTP ${response.status}${message ? ` · ${safeMessage(message, valid.apiKey)}` : ''}`,
       );
     }
-    return imageResult(payload);
+    return valid.provider === 'siliconflow' ? siliconflowResult(payload) : imageResult(payload);
   } catch (error) {
     if (signal.aborted) throw new ImageGenerationError('cancelled');
     if (timeout.signal.aborted) throw new ImageGenerationError('timedOut');
